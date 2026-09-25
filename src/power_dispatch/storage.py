@@ -171,6 +171,81 @@ CREATE TABLE IF NOT EXISTS scenario_runs (
     UNIQUE(scenario_id, as_of_date, input_sha256)
 );
 
+CREATE TABLE IF NOT EXISTS tariff_rules (
+    rule_id TEXT PRIMARY KEY,
+    series TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    timezone TEXT NOT NULL,
+    effective_from TEXT NOT NULL,
+    effective_to TEXT NOT NULL,
+    definition_json TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL DEFAULT 'draft' CHECK(state IN ('draft','reviewed','published','retired')),
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT NOT NULL REFERENCES supply_users(user_id),
+    created_at TEXT NOT NULL,
+    reviewed_by TEXT REFERENCES supply_users(user_id),
+    reviewed_at TEXT,
+    published_by TEXT REFERENCES supply_users(user_id),
+    published_at TEXT,
+    retired_by TEXT REFERENCES supply_users(user_id),
+    retired_at TEXT,
+    UNIQUE(series, version),
+    CHECK(effective_from <= effective_to)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tariff_rules_resolution
+ON tariff_rules(series, state, effective_from, effective_to);
+
+CREATE TABLE IF NOT EXISTS contracts (
+    contract_id TEXT PRIMARY KEY,
+    counterparty TEXT NOT NULL,
+    series TEXT NOT NULL,
+    rule_id TEXT NOT NULL REFERENCES tariff_rules(rule_id),
+    rule_version INTEGER NOT NULL,
+    rule_sha256 TEXT NOT NULL,
+    service_start TEXT NOT NULL,
+    service_end TEXT NOT NULL,
+    signed_by TEXT NOT NULL REFERENCES supply_users(user_id),
+    signed_at TEXT NOT NULL,
+    CHECK(service_start <= service_end)
+);
+
+CREATE TABLE IF NOT EXISTS settlement_bills (
+    settlement_id TEXT PRIMARY KEY,
+    contract_id TEXT NOT NULL REFERENCES contracts(contract_id),
+    series TEXT NOT NULL,
+    rule_id TEXT NOT NULL REFERENCES tariff_rules(rule_id),
+    rule_version INTEGER NOT NULL,
+    period_start TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    input_sha256 TEXT NOT NULL,
+    bill_json TEXT NOT NULL,
+    total_energy_mwh TEXT NOT NULL,
+    total_amount_cny TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_by TEXT NOT NULL REFERENCES supply_users(user_id),
+    created_at TEXT NOT NULL,
+    UNIQUE(contract_id, period_start, period_end)
+);
+
+CREATE INDEX IF NOT EXISTS idx_settlement_bills_series
+ON settlement_bills(series, rule_version, period_start, period_end);
+
+CREATE TABLE IF NOT EXISTS recalculation_suggestions (
+    suggestion_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bill_id TEXT NOT NULL REFERENCES settlement_bills(settlement_id),
+    rule_id TEXT NOT NULL REFERENCES tariff_rules(rule_id),
+    rule_version INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','applied','dismissed')),
+    old_total_cny TEXT NOT NULL,
+    new_total_cny TEXT,
+    delta_cny TEXT,
+    detail_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(bill_id, rule_id)
+);
+
 CREATE TABLE IF NOT EXISTS supply_idempotency (
     scope TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,

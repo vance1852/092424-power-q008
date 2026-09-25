@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 from .clock import parse_utc
 from .errors import ValidationFailed
+from .tariff import MeterInterval, TariffDefinition
 
 
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{1,63}$")
@@ -219,6 +220,119 @@ class NominationRequest:
             ),
             priority=priority,
             idempotency_key=identifier(raw.get("idempotency_key"), "idempotency_key"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TariffRuleInput:
+    rule_id: str
+    series: str
+    timezone: str
+    effective_from: str
+    effective_to: str
+    definition: TariffDefinition
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "TariffRuleInput":
+        timezone = required_text(raw.get("timezone"), "timezone", 64)
+        definition_raw = raw.get("definition")
+        if not isinstance(definition_raw, Mapping):
+            raise ValidationFailed("definition 必须是对象")
+        try:
+            definition = TariffDefinition.from_dict({**definition_raw, "timezone": timezone})
+        except ValueError as exc:
+            raise ValidationFailed(str(exc)) from exc
+        effective_from = date_text(raw.get("effective_from"), "effective_from")
+        effective_to = date_text(raw.get("effective_to"), "effective_to")
+        if effective_to < effective_from:
+            raise ValidationFailed("effective_to 不能早于 effective_from")
+        span = date.fromisoformat(effective_to) - date.fromisoformat(effective_from)
+        if span.days > 3660:
+            raise ValidationFailed("生效区间不能超过 3660 天")
+        return cls(
+            rule_id=identifier(raw.get("rule_id"), "rule_id"),
+            series=identifier(raw.get("series"), "series"),
+            timezone=timezone,
+            effective_from=effective_from,
+            effective_to=effective_to,
+            definition=definition,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContractInput:
+    contract_id: str
+    counterparty: str
+    series: str
+    service_start: str
+    service_end: str
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "ContractInput":
+        service_start = date_text(raw.get("service_start"), "service_start")
+        service_end = date_text(raw.get("service_end"), "service_end")
+        if service_end < service_start:
+            raise ValidationFailed("service_end 不能早于 service_start")
+        span = date.fromisoformat(service_end) - date.fromisoformat(service_start)
+        if span.days > 3660:
+            raise ValidationFailed("合同服务期不能超过 3660 天")
+        return cls(
+            contract_id=identifier(raw.get("contract_id"), "contract_id"),
+            counterparty=required_text(raw.get("counterparty"), "counterparty"),
+            series=identifier(raw.get("series"), "series"),
+            service_start=service_start,
+            service_end=service_end,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SettlementInput:
+    settlement_id: str
+    contract_id: str
+    period_start: str
+    period_end: str
+    idempotency_key: str
+    readings: tuple[MeterInterval, ...]
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "SettlementInput":
+        period_start = date_text(raw.get("period_start"), "period_start")
+        period_end = date_text(raw.get("period_end"), "period_end")
+        if period_end < period_start:
+            raise ValidationFailed("period_end 不能早于 period_start")
+        span = date.fromisoformat(period_end) - date.fromisoformat(period_start)
+        if span.days > 400:
+            raise ValidationFailed("结算期间不能超过 400 天")
+        raw_readings = raw.get("readings")
+        if not isinstance(raw_readings, list) or not 1 <= len(raw_readings) <= 5000:
+            raise ValidationFailed("readings 必须是 1 到 5000 个电量区间")
+        readings: list[MeterInterval] = []
+        for index, item in enumerate(raw_readings):
+            field = f"readings[{index}]"
+            if not isinstance(item, Mapping):
+                raise ValidationFailed(f"{field} 必须是对象")
+            try:
+                start_utc = parse_utc(
+                    required_text(item.get("start_utc"), f"{field}.start_utc", 40),
+                    f"{field}.start_utc",
+                )
+                end_utc = parse_utc(
+                    required_text(item.get("end_utc"), f"{field}.end_utc", 40),
+                    f"{field}.end_utc",
+                )
+            except ValueError as exc:
+                raise ValidationFailed(str(exc)) from exc
+            mwh = decimal_value(
+                item.get("mwh"), f"{field}.mwh", minimum=Decimal("0.001"), maximum=Decimal("1000000000")
+            )
+            readings.append(MeterInterval(start_utc, end_utc, mwh))
+        return cls(
+            settlement_id=identifier(raw.get("settlement_id"), "settlement_id"),
+            contract_id=identifier(raw.get("contract_id"), "contract_id"),
+            period_start=period_start,
+            period_end=period_end,
+            idempotency_key=identifier(raw.get("idempotency_key"), "idempotency_key"),
+            readings=tuple(readings),
         )
 
 
