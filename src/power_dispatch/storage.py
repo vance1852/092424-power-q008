@@ -180,6 +180,112 @@ CREATE TABLE IF NOT EXISTS supply_idempotency (
     PRIMARY KEY(scope, idempotency_key)
 );
 
+CREATE TABLE IF NOT EXISTS tariff_rule_versions (
+    version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract_id TEXT NOT NULL REFERENCES tariff_contracts(contract_id),
+    revision_no INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN
+        ('draft','in_review','approved','active','rejected','retired')),
+    definition_json TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    effective_from TEXT NOT NULL,
+    effective_to TEXT,
+    supersedes_version_id INTEGER REFERENCES tariff_rule_versions(version_id),
+    review_note TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL REFERENCES supply_users(user_id),
+    created_at TEXT NOT NULL,
+    submitted_at TEXT,
+    reviewed_by TEXT REFERENCES supply_users(user_id),
+    reviewed_at TEXT,
+    activated_at TEXT,
+    UNIQUE(contract_id, revision_no)
+);
+
+CREATE TABLE IF NOT EXISTS tariff_contracts (
+    contract_id TEXT PRIMARY KEY,
+    counterparty TEXT NOT NULL,
+    signed_on TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    pricing_version_id INTEGER REFERENCES tariff_rule_versions(version_id),
+    state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','retired')),
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT NOT NULL REFERENCES supply_users(user_id),
+    created_at TEXT NOT NULL,
+    retired_by TEXT REFERENCES supply_users(user_id),
+    retired_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_tariff_rules_lookup
+ON tariff_rule_versions(contract_id, status, effective_from, effective_to);
+
+CREATE TRIGGER IF NOT EXISTS trg_tariff_contract_pin_locked
+BEFORE UPDATE OF pricing_version_id ON tariff_contracts
+WHEN OLD.pricing_version_id IS NOT NULL AND NEW.pricing_version_id IS NOT OLD.pricing_version_id
+BEGIN
+    SELECT RAISE(ABORT, '合同计费规则版本一经锁定不可更改');
+END;
+
+CREATE TABLE IF NOT EXISTS tariff_bills (
+    bill_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract_id TEXT NOT NULL REFERENCES tariff_contracts(contract_id),
+    rule_version_id INTEGER NOT NULL REFERENCES tariff_rule_versions(version_id),
+    rule_sha256 TEXT NOT NULL,
+    settlement_date TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('preview','official')),
+    input_fingerprint TEXT NOT NULL,
+    input_json TEXT NOT NULL,
+    rule_snapshot_json TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    total_kwh TEXT NOT NULL,
+    total_amount_cny TEXT NOT NULL,
+    idempotency_key TEXT,
+    created_by TEXT NOT NULL REFERENCES supply_users(user_id),
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tariff_official_fingerprint
+ON tariff_bills(contract_id, input_fingerprint) WHERE state='official';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tariff_official_idempotency
+ON tariff_bills(idempotency_key) WHERE state='official' AND idempotency_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_tariff_bills_rule
+ON tariff_bills(rule_version_id, settlement_date);
+
+CREATE TRIGGER IF NOT EXISTS trg_tariff_bills_block_update
+BEFORE UPDATE ON tariff_bills
+WHEN OLD.state='official'
+BEGIN
+    SELECT RAISE(ABORT, '正式账单不可覆盖或修改');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_tariff_bills_block_delete
+BEFORE DELETE ON tariff_bills
+WHEN OLD.state='official'
+BEGIN
+    SELECT RAISE(ABORT, '正式账单不可删除');
+END;
+
+CREATE TABLE IF NOT EXISTS tariff_recalc_suggestions (
+    suggestion_id TEXT PRIMARY KEY,
+    contract_id TEXT NOT NULL REFERENCES tariff_contracts(contract_id),
+    old_version_id INTEGER NOT NULL REFERENCES tariff_rule_versions(version_id),
+    new_version_id INTEGER NOT NULL REFERENCES tariff_rule_versions(version_id),
+    range_from TEXT NOT NULL,
+    range_to TEXT NOT NULL,
+    affected_bills_json TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','accepted','dismissed')),
+    decision_note TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL REFERENCES supply_users(user_id),
+    created_at TEXT NOT NULL,
+    decided_by TEXT REFERENCES supply_users(user_id),
+    decided_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_tariff_suggestions_state
+ON tariff_recalc_suggestions(contract_id, status);
+
 CREATE TABLE IF NOT EXISTS supply_audit_events (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_type TEXT NOT NULL,

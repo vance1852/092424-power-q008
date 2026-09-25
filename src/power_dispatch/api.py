@@ -85,6 +85,50 @@ class JsonApplication:
                 return Response(200, self.service.run_scenario(actor, parts[1], payload["as_of_date"]))
             if method == "GET" and path == "/audit/chain":
                 return Response(200, self.service.audit_chain(actor))
+            # 分时电价合同、规则生命周期与结算
+            if method == "POST" and path == "/tariff/contracts":
+                return Response(201, self.service.create_contract(actor, payload))
+            if method == "GET" and len(parts) == 3 and parts[:2] == ["tariff", "contracts"]:
+                return Response(200, self.service.contract(parts[2]))
+            if method == "POST" and len(parts) == 4 and parts[:2] == ["tariff", "contracts"] and parts[3] == "pin":
+                return Response(200, self.service.pin_contract_rule(actor, parts[2], payload["version_id"]))
+            if method == "POST" and len(parts) == 4 and parts[:2] == ["tariff", "contracts"] and parts[3] == "rules":
+                return Response(201, self.service.create_rule_draft(actor, parts[2], payload))
+            if method == "GET" and len(parts) == 4 and parts[:2] == ["tariff", "contracts"] and parts[3] == "rules":
+                return Response(200, {"versions": self.service.list_rule_versions(parts[2])})
+            if method == "GET" and len(parts) == 4 and parts[:2] == ["tariff", "contracts"] and parts[3] == "bills":
+                state = query.get("state", [None])[0]
+                return Response(200, {"bills": self.service.list_bills(parts[2], state=state)})
+            if method == "POST" and len(parts) == 4 and parts[:2] == ["tariff", "contracts"] and parts[3] == "settle":
+                return Response(200, self.service.settle_bill(
+                    actor, parts[2], payload["settlement_date"], payload["consumption"],
+                    payload.get("idempotency_key"),
+                ))
+            if method == "GET" and len(parts) == 3 and parts[:2] == ["tariff", "rules"]:
+                return Response(200, self.service.rule_version(int(parts[2])))
+            if method == "POST" and len(parts) == 4 and parts[:2] == ["tariff", "rules"] and parts[3] == "submit":
+                return Response(200, self.service.submit_rule_for_review(actor, int(parts[2]), payload.get("note", "")))
+            if method == "POST" and len(parts) == 4 and parts[:2] == ["tariff", "rules"] and parts[3] == "review":
+                return Response(200, self.service.review_rule(
+                    actor, int(parts[2]), bool(payload["approved"]), payload.get("note", "")))
+            if method == "POST" and len(parts) == 4 and parts[:2] == ["tariff", "rules"] and parts[3] == "activate":
+                return Response(200, self.service.activate_rule(actor, int(parts[2])))
+            if method == "POST" and len(parts) == 4 and parts[:2] == ["tariff", "rules"] and parts[3] == "retire":
+                return Response(200, self.service.retire_rule(
+                    actor, int(parts[2]), payload.get("effective_to"), payload.get("note", "")))
+            if method == "POST" and len(parts) == 4 and parts[:2] == ["tariff", "rules"] and parts[3] == "preview":
+                return Response(200, self.service.preview_bill(
+                    actor, int(parts[2]), payload["settlement_date"], payload["consumption"]))
+            if method == "GET" and len(parts) == 3 and parts[:2] == ["tariff", "bills"]:
+                return Response(200, self.service.bill(int(parts[2])))
+            if method == "GET" and path == "/tariff/recalc-suggestions":
+                contract = query.get("contract_id", [None])[0]
+                return Response(200, {"suggestions": self.service.list_recalc_suggestions(actor, contract)})
+            if method == "GET" and len(parts) == 3 and parts[:2] == ["tariff", "recalc-suggestions"]:
+                return Response(200, self.service.recalc_suggestion(parts[2]))
+            if method == "POST" and len(parts) == 4 and parts[:2] == ["tariff", "recalc-suggestions"] and parts[3] == "decide":
+                return Response(200, self.service.decide_recalc_suggestion(
+                    actor, parts[2], bool(payload["accepted"]), payload.get("note", "")))
             return Response(404, {"error": {"code": "route_not_found", "message": "接口不存在"}})
         except SupplyError as exc:
             return Response(exc.status, {"error": {"code": exc.code, "message": str(exc)}})
